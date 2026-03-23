@@ -1,0 +1,8 @@
+[package]
+name = "bevy_game_tester"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+semantic_rl_fuzzer = { git = "https://github.com/huynq55-v3/semantic_rl_fuzzer.git", features = ["burn-backend"]}
+bevy = { version = "0.18.1", default-features = false }
