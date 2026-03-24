@@ -264,12 +264,15 @@ fn main() {
 
     let agent = create_gpu_agent(3, 512, &head_sizes, 0.001, BevyTranslator);
 
-    let env = BevyEnv::new();
+    // Initialize an Environment Farm: 256 parallel Bevy worlds on CPU
+    let num_envs = 256;
+    let envs: Vec<BevyEnv> = (0..num_envs).map(|_| BevyEnv::new()).collect();
+
     let buffer = HybridReplayBuffer::new(5000);
     let oracle = BevyOracle;
 
     let mut engine = FuzzEngine {
-        env,
+        envs,
         agent,
         oracle,
         buffer,
@@ -277,7 +280,8 @@ fn main() {
         batch_size: 256,
     };
 
-    println!("🔥 Starting Fuzzing to find hidden bugs in Bevy...");
+    // Note: 50_000 cycles × 256 envs = 12.8 million episodes!
+    println!("🔥 Starting Vectorized Fuzzing with {} environments...", num_envs);
     engine.run_fuzzing(50_000);
     println!("✅ Fuzzing process completed.");
 }
