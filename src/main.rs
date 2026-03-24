@@ -1,7 +1,7 @@
-use bevy::prelude::*;
+use bevy::{ecs::schedule::ExecutorKind, prelude::*};
 use semantic_rl_fuzzer::{
-    FuzzEngine, FuzzEnvironment, HybridReplayBuffer, OracleStatus, StepResult, TruthOracle,
-    burn_helpers::{ActionTranslator, create_gpu_agent},
+    FuzzConfig, FuzzCorpus, FuzzEngine, FuzzEnvironment, OracleStatus, StepResult, TruthOracle,
+    burn_helpers::{ActionTranslator, create_cpu_agent},
 };
 use std::panic;
 
@@ -51,9 +51,10 @@ pub enum BevyAction {
     RunSchedule,           // Force Bevy to run multithreaded systems
 }
 
-/// Pool of tricky numbers for AI to choose (instead of random floats)
 const VALUE_POOL: [i32; 6] = [10, -10, 42, 99, 0, 9999];
 
+// THÊM ĐẠI DIỆN CLONE ĐỂ THỎA MÃN ĐA LUỒNG
+#[derive(Clone)]
 pub struct BevyTranslator;
 
 impl ActionTranslator for BevyTranslator {
@@ -84,7 +85,6 @@ pub struct BevyEnv {
     pub schedule: Schedule,
     pub alive_entities: Vec<Entity>,
     pub current_episode: usize,
-    /// Set by step() so the Oracle can check if a panic was caught.
     pub last_step_crashed: bool,
 }
 
@@ -92,6 +92,9 @@ impl BevyEnv {
     pub fn new() -> Self {
         let world = World::new();
         let mut schedule = Schedule::default();
+
+        // ÉP BEVY CHẠY ĐƠN LUỒNG BÊN TRONG (Để nhường quyền đa luồng cho Rayon bên ngoài)
+        schedule.set_executor_kind(ExecutorKind::SingleThreaded);
         schedule.add_systems((apply_poison_system, check_death_system).chain());
 
         Self {
@@ -103,7 +106,6 @@ impl BevyEnv {
         }
     }
 
-    /// Synchronize the alive entities list after Bevy runs systems
     fn sync_alive_entities(&mut self) {
         self.alive_entities.clear();
         let mut query = self.world.query::<Entity>();
@@ -113,36 +115,65 @@ impl BevyEnv {
     }
 }
 
+// 🌟 TRICK QUAN TRỌNG: Tự implement Clone cho BevyEnv
+// Vì Bevy World không thể Clone, ta sẽ tạo một World mới hoàn toàn cho mỗi luồng.
+impl Clone for BevyEnv {
+    fn clone(&self) -> Self {
+        BevyEnv::new()
+    }
+}
+
 impl FuzzEnvironment for BevyEnv {
     type State = Vec<f32>;
     type Action = BevyAction;
 
     fn get_state(&self) -> Self::State {
-        let mut combo_count = 0;
+        let mut total_hp = 0;
+        let mut total_poison = 0;
+
+        // Chỉ thống kê các chỉ số vĩ mô của thế giới
         for &entity in &self.alive_entities {
-            if self.world.get::<Health>(entity).is_some()
-                && self.world.get::<Poison>(entity).is_some()
-            {
-                combo_count += 1;
-            }
+            let hp = self.world.get::<Health>(entity).map(|h| h.0).unwrap_or(0);
+            let p = self.world.get::<Poison>(entity).map(|p| p.0).unwrap_or(0);
+
+            total_hp += hp;
+            total_poison += p;
         }
 
+        // Trả về đúng 4 chiều không gian mù lòa.
+        // AI phải tự tìm ra ý nghĩa của việc thay đổi các con số này.
         vec![
-            self.alive_entities.len() as f32,
-            self.world.archetypes().len() as f32,
-            combo_count as f32,
+            (self.alive_entities.len() as f32) / 100.0,
+            (self.world.archetypes().len() as f32) / 10.0,
+            (total_hp as f32) / 1000.0,
+            (total_poison as f32) / 1000.0,
         ]
     }
 
-    fn get_action_mask(&self) -> Vec<bool> {
-        let mut mask = vec![true; 5];
+    fn get_action_mask(&self) -> Vec<Vec<bool>> {
+        // Head 0: Loại hành động (Kích thước 5)
+        let mut action_type_mask = vec![true; 5];
         if self.alive_entities.is_empty() {
-            mask[1..4].fill(false);
+            action_type_mask[1..4].fill(false); // Cấm Despawn, Health, Poison
         }
-        mask
+
+        // Head 1: Entity Index (Kích thước 5)
+        let mut entity_idx_mask = vec![false; 5];
+        let num_alive = self.alive_entities.len().min(5); // Tối đa 5 khe
+
+        if num_alive > 0 {
+            // Chỉ mở khóa các khe ID tương ứng với số lượng quái vật đang sống
+            entity_idx_mask[0..num_alive].fill(true);
+        } else {
+            // MẸO: Nếu không có quái nào, vẫn phải mở đại 1 khe để Softmax không bị lỗi NaN.
+            // Đằng nào Head 0 cũng đã khóa lệnh thao tác rồi nên khe này vô hại.
+            entity_idx_mask[0] = true;
+        }
+
+        // Trả về: [Mask Lệnh, Mask Tham Số ID, Không Mask Value]
+        vec![action_type_mask, entity_idx_mask, vec![]]
     }
 
-    /// Pure execution — no oracle logic here. Just run the action and report facts.
     fn step(&mut self, action: &Self::Action) -> StepResult<Self::State> {
         let mut is_invalid = false;
 
@@ -179,7 +210,6 @@ impl FuzzEnvironment for BevyEnv {
             }
         }));
 
-        // Store crash state for Oracle to inspect
         self.last_step_crashed = catch_result.is_err();
 
         StepResult {
@@ -201,11 +231,11 @@ impl FuzzEnvironment for BevyEnv {
 // 4. TRUTH ORACLE (Semantic Bug Judge)
 // ==========================================
 
+#[derive(Clone)]
 pub struct BevyOracle;
 
 impl TruthOracle<BevyEnv> for BevyOracle {
     fn judge(&self, env: &mut BevyEnv, is_invalid: bool) -> OracleStatus {
-        // Check if the last step caused a crash (panic caught)
         if env.last_step_crashed {
             return OracleStatus::Violated;
         }
@@ -213,43 +243,9 @@ impl TruthOracle<BevyEnv> for BevyOracle {
             return OracleStatus::Invalid;
         }
 
-        let mut total_reward = 0.1;
-        let episode = env.current_episode;
-
-        let mut query = env.world.query::<(Option<&Health>, Option<&Poison>)>();
-        let results: Vec<_> = query.iter(&env.world).collect();
-
-        for (h, p) in &results {
-            if h.is_some() && p.is_some() {
-                total_reward += 2.0;
-
-                if episode % 100 == 0 {
-                    println!(
-                        "✨ [Episode {}] AI is maintaining Health+Poison Combo",
-                        episode
-                    );
-                }
-
-                let h_val = h.unwrap().0;
-                let p_val = p.unwrap().0;
-
-                if h_val == 42 {
-                    total_reward += 10.0;
-                }
-                if p_val == 99 {
-                    total_reward += 10.0;
-                }
-                if h_val == 42 && p_val == 99 {
-                    total_reward += 50.0;
-                    println!("🔥 [Episode {}] APPROACHING THE BUG! (42-99)", episode);
-                }
-            }
-        }
-
-        total_reward += (env.world.archetypes().len() as f32) * 0.05;
-        OracleStatus::Hold {
-            reward: total_reward,
-        }
+        // ÉP CHẾ ĐỘ PURE EXPLORATION: Oracle không cho điểm trung gian.
+        // Mạng Neural phải tự tìm động lực từ sự "Ngạc nhiên" (ICM).
+        OracleStatus::Hold { reward: 0.0 }
     }
 }
 
@@ -258,30 +254,68 @@ impl TruthOracle<BevyEnv> for BevyOracle {
 // ==========================================
 
 fn main() {
-    println!("🚀 Starting Bevy Game Engine Fuzzer...");
+    println!("🚀 Starting Bevy Game Engine Fuzzer (Parallel CPU Actor Mode)...");
 
     let head_sizes = vec![5, 5, 6];
+    let agent = create_cpu_agent(4, 512, &head_sizes, 0.001, BevyTranslator);
 
-    let agent = create_gpu_agent(3, 512, &head_sizes, 0.001, BevyTranslator);
-
-    // Initialize an Environment Farm: 256 parallel Bevy worlds on CPU
-    let num_envs = 256;
-    let envs: Vec<BevyEnv> = (0..num_envs).map(|_| BevyEnv::new()).collect();
-
-    let buffer = HybridReplayBuffer::new(5000);
-    let oracle = BevyOracle;
-
-    let mut engine = FuzzEngine {
-        envs,
-        agent,
-        oracle,
-        buffer,
-        max_steps_per_episode: 50,
-        batch_size: 256,
+    // Sử dụng Cấu hình mới, sạch sẽ và gom gọn
+    let config = FuzzConfig {
+        num_envs: 512,
+        max_steps_per_episode: 100,
+        total_iterations: 50_000,
+        log_interval: 10,
     };
 
-    // Note: 50_000 cycles × 256 envs = 12.8 million episodes!
-    println!("🔥 Starting Vectorized Fuzzing with {} environments...", num_envs);
-    engine.run_fuzzing(50_000);
+    let base_env = BevyEnv::new(); // Môi trường chuẩn để clone ra các luồng
+    let oracle = BevyOracle;
+    let corpus = FuzzCorpus::new(); // Dùng Corpus để giữ bug artifacts
+
+    let mut engine = FuzzEngine {
+        base_env,
+        agent,
+        oracle,
+        corpus,
+        config,
+    };
+
+    println!(
+        "🔥 Starting Parallel Fuzzing with {} environments...",
+        engine.config.num_envs
+    );
+
+    // 🌟 TRUYỀN CALLBACK ĐỂ TỰ BẮT VÀ IN LOG THEO NGÔN NGỮ CỦA GAME
+    engine.run_fuzzing(|iteration, rollouts| {
+        let mut action_counts = [0; 5];
+        let mut total_actions = 0;
+
+        // Quét toàn bộ hành vi của AI trong lô vừa rồi
+        for traj in rollouts {
+            for action in &traj.actions {
+                total_actions += 1;
+                match action {
+                    BevyAction::SpawnEmpty => action_counts[0] += 1,
+                    BevyAction::Despawn(_) => action_counts[1] += 1,
+                    BevyAction::AddHealth(_, _) => action_counts[2] += 1,
+                    BevyAction::AddPoison(_, _) => action_counts[3] += 1,
+                    BevyAction::RunSchedule => action_counts[4] += 1,
+                }
+            }
+        }
+
+        if total_actions > 0 {
+            let p_spawn = (action_counts[0] as f32 / total_actions as f32) * 100.0;
+            let p_despawn = (action_counts[1] as f32 / total_actions as f32) * 100.0;
+            let p_health = (action_counts[2] as f32 / total_actions as f32) * 100.0;
+            let p_poison = (action_counts[3] as f32 / total_actions as f32) * 100.0;
+            let p_run = (action_counts[4] as f32 / total_actions as f32) * 100.0;
+
+            println!(
+                "   🎮 [Bevy Fuzzer] Spawn ({:.1}%) | Despawn ({:.1}%) | +Health ({:.1}%) | +Poison ({:.1}%) | RunSched ({:.1}%)",
+                p_spawn, p_despawn, p_health, p_poison, p_run
+            );
+        }
+    });
+
     println!("✅ Fuzzing process completed.");
 }
