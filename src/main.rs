@@ -1,16 +1,12 @@
 use bevy::prelude::*;
 use semantic_rl_fuzzer::{
-    FuzzEngine,
-    FuzzEnvironment,
-    HybridReplayBuffer,
-    OracleStatus,
-    StepResult,
-    burn_helpers::{ActionTranslator, create_gpu_agent}, // Import Nhà máy
+    FuzzEngine, FuzzEnvironment, HybridReplayBuffer, OracleStatus, StepResult, TruthOracle,
+    burn_helpers::{ActionTranslator, create_gpu_agent},
 };
 use std::panic;
 
 // ==========================================
-// 1. BEVY GAME LOGIC (NẠN NHÂN CỦA CHÚNG TA)
+// 1. BEVY GAME LOGIC (OUR VICTIM)
 // ==========================================
 
 #[derive(Component)]
@@ -19,19 +15,21 @@ struct Health(i32);
 #[derive(Component)]
 struct Poison(i32);
 
-/// System 1: Trừ máu nếu bị trúng độc
+/// System 1: Subtract health if poisoned
 fn apply_poison_system(mut query: Query<(&mut Health, &Poison)>) {
     for (mut health, poison) in query.iter_mut() {
         health.0 -= poison.0;
 
-        // 🚨 HIDDEN BUG (LỖ HỔNG LOGIC ẨN) 🚨
+        // 🚨 HIDDEN BUG (HIDDEN LOGIC FLAW) 🚨
         if health.0 == 42 && poison.0 == 99 {
-            panic!("FATAL LOGIC BUG: Tìm thấy lỗ hổng tràn số khi Health=42 và Poison=99!");
+            panic!(
+                "FATAL LOGIC BUG: Found integer overflow vulnerability when Health=42 and Poison=99!"
+            );
         }
     }
 }
 
-/// System 2: Dọn dẹp xác chết
+/// System 2: Cleanup dead entities
 fn check_death_system(mut commands: Commands, query: Query<(Entity, &Health)>) {
     for (entity, health) in query.iter() {
         if health.0 <= 0 {
@@ -41,19 +39,19 @@ fn check_death_system(mut commands: Commands, query: Query<(Entity, &Health)>) {
 }
 
 // ==========================================
-// 2. TỪ ĐIỂN VÀ TRÌNH PHIÊN DỊCH (TRANSLATOR)
+// 2. DICTIONARY AND TRANSLATOR
 // ==========================================
 
 #[derive(Clone, Debug)]
 pub enum BevyAction {
     SpawnEmpty,
-    Despawn(usize),        // Tham số là Index của Entity trong danh sách alive
-    AddHealth(usize, i32), // Index Entity, Giá trị Máu
-    AddPoison(usize, i32), // Index Entity, Giá trị Độc
-    RunSchedule,           // Ép Bevy chạy các System đa luồng
+    Despawn(usize),        // Parameter is the Entity Index in the alive list
+    AddHealth(usize, i32), // Entity Index, Health Value
+    AddPoison(usize, i32), // Entity Index, Poison Value
+    RunSchedule,           // Force Bevy to run multithreaded systems
 }
 
-/// Bể chứa các con số hiểm hóc để AI chọn (Thay vì sinh số float ngẫu nhiên)
+/// Pool of tricky numbers for AI to choose (instead of random floats)
 const VALUE_POOL: [i32; 6] = [10, -10, 42, 99, 0, 9999];
 
 pub struct BevyTranslator;
@@ -64,7 +62,7 @@ impl ActionTranslator for BevyTranslator {
     fn translate(&self, head_outputs: &[usize]) -> Self::TargetAction {
         let action_type = head_outputs[0];
         let entity_idx = head_outputs[1];
-        let value_idx = head_outputs[2] % VALUE_POOL.len(); // Tránh out of bounds
+        let value_idx = head_outputs[2] % VALUE_POOL.len();
         let value = VALUE_POOL[value_idx];
 
         match action_type {
@@ -78,30 +76,34 @@ impl ActionTranslator for BevyTranslator {
 }
 
 // ==========================================
-// 3. MÔI TRƯỜNG FUZZING (THE ENVIRONMENT)
+// 3. FUZZING ENVIRONMENT (Pure Execution Only)
 // ==========================================
 
 pub struct BevyEnv {
     pub world: World,
     pub schedule: Schedule,
-    pub alive_entities: Vec<Entity>, // Môi trường tự theo dõi các ID hợp lệ
+    pub alive_entities: Vec<Entity>,
+    pub current_episode: usize,
+    /// Set by step() so the Oracle can check if a panic was caught.
+    pub last_step_crashed: bool,
 }
 
 impl BevyEnv {
     pub fn new() -> Self {
         let world = World::new();
         let mut schedule = Schedule::default();
-        // Xếp lịch chạy System theo chuỗi
         schedule.add_systems((apply_poison_system, check_death_system).chain());
 
         Self {
             world,
             schedule,
             alive_entities: Vec::new(),
+            current_episode: 0,
+            last_step_crashed: false,
         }
     }
 
-    /// Đồng bộ lại danh sách Entity sau khi Bevy chạy các System (vì System có thể despawn)
+    /// Synchronize the alive entities list after Bevy runs systems
     fn sync_alive_entities(&mut self) {
         self.alive_entities.clear();
         let mut query = self.world.query::<Entity>();
@@ -115,137 +117,167 @@ impl FuzzEnvironment for BevyEnv {
     type State = Vec<f32>;
     type Action = BevyAction;
 
-    /// Mắt của AI: Nhìn vào "Sức khỏe" của Bevy
     fn get_state(&self) -> Self::State {
+        let mut combo_count = 0;
+        for &entity in &self.alive_entities {
+            if self.world.get::<Health>(entity).is_some()
+                && self.world.get::<Poison>(entity).is_some()
+            {
+                combo_count += 1;
+            }
+        }
+
         vec![
-            self.alive_entities.len() as f32,     // Số lượng quái vật
-            self.world.archetypes().len() as f32, // Độ phân mảnh bộ nhớ
+            self.alive_entities.len() as f32,
+            self.world.archetypes().len() as f32,
+            combo_count as f32,
         ]
     }
 
-    /// KỸ THUẬT CHE MẶT NẠ (ACTION MASKING)
     fn get_action_mask(&self) -> Vec<bool> {
-        let mut mask = vec![true; 5]; // Có 5 hành động ở Head 0
-
-        // CẤM AI gọi hàm Despawn, AddHealth, AddPoison nếu trên map chưa có quái vật nào!
+        let mut mask = vec![true; 5];
         if self.alive_entities.is_empty() {
-            mask[1] = false; // Despawn
-            mask[2] = false; // AddHealth
-            mask[3] = false; // AddPoison
+            mask[1..4].fill(false);
         }
         mask
     }
 
+    /// Pure execution — no oracle logic here. Just run the action and report facts.
     fn step(&mut self, action: &Self::Action) -> StepResult<Self::State> {
         let mut is_invalid = false;
 
-        // Bọc trong catch_unwind để AI không bị văng ra ngoài khi Bevy gặp lỗi Panic
-        let catch_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-            match action {
-                BevyAction::SpawnEmpty => {
-                    let id = self.world.spawn_empty().id();
-                    self.alive_entities.push(id);
+        let catch_result = panic::catch_unwind(panic::AssertUnwindSafe(|| match action {
+            BevyAction::SpawnEmpty => {
+                let id = self.world.spawn_empty().id();
+                self.alive_entities.push(id);
+            }
+            BevyAction::Despawn(idx) => {
+                if let Some(&entity) = self.alive_entities.get(*idx) {
+                    self.world.despawn(entity);
+                    self.sync_alive_entities();
+                } else {
+                    is_invalid = true;
                 }
-                BevyAction::Despawn(idx) => {
-                    if let Some(&entity) = self.alive_entities.get(*idx) {
-                        self.world.despawn(entity);
-                        self.sync_alive_entities();
-                    } else {
-                        is_invalid = true; // AI đẻ ra Index tào lao -> Báo lỗi rác
-                    }
+            }
+            BevyAction::AddHealth(idx, val) => {
+                if let Some(&entity) = self.alive_entities.get(*idx) {
+                    self.world.entity_mut(entity).insert(Health(*val));
+                } else {
+                    is_invalid = true;
                 }
-                BevyAction::AddHealth(idx, val) => {
-                    if let Some(&entity) = self.alive_entities.get(*idx) {
-                        self.world.entity_mut(entity).insert(Health(*val));
-                    } else {
-                        is_invalid = true;
-                    }
+            }
+            BevyAction::AddPoison(idx, val) => {
+                if let Some(&entity) = self.alive_entities.get(*idx) {
+                    self.world.entity_mut(entity).insert(Poison(*val));
+                } else {
+                    is_invalid = true;
                 }
-                BevyAction::AddPoison(idx, val) => {
-                    if let Some(&entity) = self.alive_entities.get(*idx) {
-                        self.world.entity_mut(entity).insert(Poison(*val));
-                    } else {
-                        is_invalid = true;
-                    }
-                }
-                BevyAction::RunSchedule => {
-                    self.schedule.run(&mut self.world);
-                    self.sync_alive_entities(); // System dọn dẹp xác chết, phải đồng bộ lại
-                }
+            }
+            BevyAction::RunSchedule => {
+                self.schedule.run(&mut self.world);
+                self.sync_alive_entities();
             }
         }));
 
-        // THẨM PHÁN CHẤM ĐIỂM (THE TRUTH ORACLE)
-        if catch_result.is_err() {
-            // BEVY ĐÃ PANIC (Bị sập)! TÌM THẤY BUG LOGIC!
-            return StepResult {
-                next_state: self.get_state(),
-                reward: 100.0, // Jackpot!
-                is_violated: true,
-                is_invalid: false,
-            };
-        }
+        // Store crash state for Oracle to inspect
+        self.last_step_crashed = catch_result.is_err();
 
-        if is_invalid {
-            // Lệnh sai tham số, cấm không cho điểm
-            return StepResult {
-                next_state: self.get_state(),
-                reward: -1.0,
-                is_violated: false,
-                is_invalid: true,
-            };
-        }
-
-        // Vượt qua màng lọc, chạy tốt -> Thưởng một chút để khuyến khích
         StepResult {
             next_state: self.get_state(),
-            reward: 0.1,
-            is_violated: false,
-            is_invalid: false,
+            is_invalid,
         }
     }
 
     fn reset(&mut self) {
         self.world.clear_entities();
         self.world.clear_trackers();
-
         self.alive_entities.clear();
+        self.last_step_crashed = false;
+        self.current_episode += 1;
     }
 }
 
 // ==========================================
-// 4. HÀM MAIN: KẾT NỐI MỌI THỨ
+// 4. TRUTH ORACLE (Semantic Bug Judge)
+// ==========================================
+
+pub struct BevyOracle;
+
+impl TruthOracle<BevyEnv> for BevyOracle {
+    fn judge(&self, env: &mut BevyEnv, is_invalid: bool) -> OracleStatus {
+        // Check if the last step caused a crash (panic caught)
+        if env.last_step_crashed {
+            return OracleStatus::Violated;
+        }
+        if is_invalid {
+            return OracleStatus::Invalid;
+        }
+
+        let mut total_reward = 0.1;
+        let episode = env.current_episode;
+
+        let mut query = env.world.query::<(Option<&Health>, Option<&Poison>)>();
+        let results: Vec<_> = query.iter(&env.world).collect();
+
+        for (h, p) in &results {
+            if h.is_some() && p.is_some() {
+                total_reward += 2.0;
+
+                if episode % 100 == 0 {
+                    println!(
+                        "✨ [Episode {}] AI is maintaining Health+Poison Combo",
+                        episode
+                    );
+                }
+
+                let h_val = h.unwrap().0;
+                let p_val = p.unwrap().0;
+
+                if h_val == 42 {
+                    total_reward += 10.0;
+                }
+                if p_val == 99 {
+                    total_reward += 10.0;
+                }
+                if h_val == 42 && p_val == 99 {
+                    total_reward += 50.0;
+                    println!("🔥 [Episode {}] APPROACHING THE BUG! (42-99)", episode);
+                }
+            }
+        }
+
+        total_reward += (env.world.archetypes().len() as f32) * 0.05;
+        OracleStatus::Hold {
+            reward: total_reward,
+        }
+    }
+}
+
+// ==========================================
+// 5. MAIN FUNCTION: CONNECTING EVERYTHING
 // ==========================================
 
 fn main() {
-    println!("🚀 Khởi động Bevy Game Engine Fuzzer...");
+    println!("🚀 Starting Bevy Game Engine Fuzzer...");
 
-    let head_sizes = vec![5, 100, 6];
+    let head_sizes = vec![5, 5, 6];
 
-    // SỰ THANH LỊCH LÀ ĐÂY:
-    // Gọi Nhà máy của Lib để đẻ ra Agent. Crate Bin không cần biết bên trong có Tensor.
-    let agent = create_gpu_agent(
-        2,              // Số lượng thông số State (Input size)
-        512,            // Số nơ-ron lớp ẩn (Hidden size)
-        &head_sizes,    // Cấu trúc 3 cái Đầu
-        0.001,          // Tốc độ học (Learning rate)
-        BevyTranslator, // Đưa Trình phiên dịch của chúng ta cho AI
-    );
+    let agent = create_gpu_agent(3, 512, &head_sizes, 0.001, BevyTranslator);
 
     let env = BevyEnv::new();
     let buffer = HybridReplayBuffer::new(5000);
+    let oracle = BevyOracle;
 
     let mut engine = FuzzEngine {
         env,
         agent,
+        oracle,
         buffer,
-        // Ép AI bắn 50 lệnh liên tiếp mới hết 1 Hồi
-        max_steps_per_episode: 50, 
-        // Ép AI phải gom đủ 256 Hồi mới được gửi sang GPU 1 lần!
+        max_steps_per_episode: 50,
         batch_size: 256,
     };
 
-    println!("🔥 Bắt đầu Fuzzing đi tìm Bug ẩn trong Bevy...");
+    println!("🔥 Starting Fuzzing to find hidden bugs in Bevy...");
     engine.run_fuzzing(50_000);
-    println!("✅ Đã hoàn thành quá trình Fuzzing.");
+    println!("✅ Fuzzing process completed.");
 }

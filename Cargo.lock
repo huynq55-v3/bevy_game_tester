@@ -5394,7 +5394,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "semantic_rl_fuzzer"
 version = "0.1.0"
-source = "git+https://github.com/huynq55-v3/semantic_rl_fuzzer.git#6ca8b8122a11e8f0bfe889aaebcb3f29bbb9ae19"
+source = "git+https://github.com/huynq55-v3/semantic_rl_fuzzer.git#2c491c6a6a960e0c9ea27b98711c1fff92a3b071"
 dependencies = [
  "burn",
  "rand 0.10.0",
