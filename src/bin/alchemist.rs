@@ -96,50 +96,58 @@ impl FuzzEnvironment for AlchemyEnv {
     }
 
     fn step(&mut self, action: &Self::Action) -> StepResult<Self::State> {
+        let mut failed = false;
+
         match action {
             AlchemyAction::Intake(val) => {
-                // LUẬT: Chỉ nạp khi bình F0 rỗng hoàn toàn
                 if self.flasks[0] == 0 {
                     self.flasks[0] = *val;
+                } else {
+                    failed = true; // Nạp đè
                 }
             }
             AlchemyAction::Transfer(src, dst) => {
                 let s = *src;
                 let d = *dst;
-                // LUẬT: Chỉ đổ khi bình nguồn có đồ VÀ bình đích đang rỗng
                 if s != d && self.flasks[s] != 0 && self.flasks[d] == 0 {
                     self.flasks[d] = self.flasks[s];
                     self.flasks[s] = 0;
+                } else {
+                    failed = true; // Đổ rác hoặc đổ nhầm bình
                 }
             }
             AlchemyAction::Catalyze(target) => {
                 let t = *target;
                 let neighbor = (t + 1) % 3;
 
-                // THE TRAP: Phản ứng chỉ xảy ra nếu bình bên cạnh rỗng
-                if self.flasks[neighbor] == 0 {
+                // Phản ứng chỉ xảy ra nếu bình bên cạnh rỗng VÀ đúng nguyên liệu
+                if self.flasks[neighbor] == 0 && (self.flasks[t] == 42 || self.flasks[t] == 99) {
                     if self.flasks[t] == 42 {
-                        self.flasks[t] = 1; // Vật chất 1
-                    } else if self.flasks[t] == 99 {
-                        self.flasks[t] = 2; // Vật chất 2
+                        self.flasks[t] = 1;
                     } else {
-                        self.flasks[t] = 0; // Sai nguyên liệu -> Bay hơi
+                        self.flasks[t] = 2;
                     }
                 } else {
-                    // Nếu bình bên cạnh không rỗng -> Phản ứng thất bại, mất đồ
-                    self.flasks[t] = 0;
+                    failed = true; // Vi phạm luật bẫy hoặc sai hóa chất
                 }
             }
             AlchemyAction::Transmute => {
                 if self.flasks[0] == 9999 && self.flasks[1] == 2 && self.flasks[2] == 1 {
                     self.last_step_crashed = true;
+                } else {
+                    failed = true; // Kích nổ non -> Sập lò
                 }
             }
         }
 
+        // NẾU THẤT BẠI: Reset toàn bộ công sức của Episode này
+        if failed {
+            self.reset();
+        }
+
         StepResult {
             next_state: self.get_state(),
-            is_invalid: false, // Vẫn giữ tự do, AI làm sai thì State không đổi (nhàm chán)
+            is_invalid: false,
         }
     }
 
@@ -186,8 +194,8 @@ fn main() {
     );
 
     let config = FuzzConfig {
-        num_envs: 1024,             // Quất thẳng 1024 luồng vì Rust chạy quá nhẹ!
-        max_steps_per_episode: 100, // Chuỗi ngắn thôi để nó reset nhanh
+        num_envs: 1024,            // Quất thẳng 1024 luồng vì Rust chạy quá nhẹ!
+        max_steps_per_episode: 20, // Chuỗi ngắn thôi để nó reset nhanh
         total_iterations: 10_000,
         log_interval: 10,
     };
