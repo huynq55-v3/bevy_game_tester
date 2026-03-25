@@ -186,8 +186,8 @@ fn main() {
     );
 
     let config = FuzzConfig {
-        num_envs: 1024,            // Quất thẳng 1024 luồng vì Rust chạy quá nhẹ!
-        max_steps_per_episode: 32, // Chuỗi ngắn thôi để nó reset nhanh
+        num_envs: 1024,             // Quất thẳng 1024 luồng vì Rust chạy quá nhẹ!
+        max_steps_per_episode: 100, // Chuỗi ngắn thôi để nó reset nhanh
         total_iterations: 10_000,
         log_interval: 10,
     };
@@ -211,18 +211,19 @@ fn main() {
         let mut best_score = 0;
         let mut best_trajectory_info = None;
 
+        // 🌟 BẢO BỐI Ở ĐÂY: Biến lưu lại chuỗi hành động phá đảo
+        let mut winning_actions = None;
+
         // --- HELPER: Hàm kiểm tra vân tay của một con số trong State ---
         let matches_val = |state: &[f32], flask_idx: usize, target: i32| -> bool {
             let offset = flask_idx * 5;
-            // 1. Kiểm tra bit Is_Zero (bit đầu tiên của mỗi cụm 5)
             if target == 0 {
                 return state[offset] == 1.0;
             }
             if state[offset] == 1.0 {
                 return false;
-            } // Đòi số khác 0 nhưng state báo rỗng
+            }
 
-            // 2. Tính lại Hash của target để so khớp 4 bit còn lại
             let mut h = (target.abs() as u32).wrapping_mul(2654435761);
             h ^= h >> 16;
             for i in 0..4 {
@@ -235,8 +236,10 @@ fn main() {
         };
 
         for traj in rollouts {
+            // 🌟 NẾU LÀ CHUỖI PHÁ ĐẢO (CRASH), LƯU NGAY LẠI!
             if traj.is_interesting && traj.reward >= 0.0 {
                 crash_count += 1;
+                winning_actions = Some(traj.actions.clone());
             }
 
             let mut traj_best_score = 0;
@@ -249,12 +252,10 @@ fn main() {
 
                 let state = &traj.states[step_idx + 1];
 
-                // Kiểm tra các mốc quan trọng bằng vân tay
                 let f0_9999 = matches_val(state, 0, 9999);
                 let f1_mat2 = matches_val(state, 1, 2);
                 let f2_mat1 = matches_val(state, 2, 1);
 
-                // Thống kê thành tựu
                 if matches_val(state, 0, 1) || matches_val(state, 1, 1) || matches_val(state, 2, 1)
                 {
                     created_mat_1 += 1;
@@ -267,7 +268,6 @@ fn main() {
                     f0_is_9999 += 1;
                 }
 
-                // Tính điểm tiến trình (Score)
                 let mut score = 0;
                 if f0_9999 {
                     score += 1;
@@ -296,8 +296,17 @@ fn main() {
             }
         }
 
+        // 🌟 IN RA BẢNG VÀNG TRƯỚC KHI THOÁT
         if crash_count > 0 {
-            println!("💥 BÙM! CORE MELTDOWN! TÌM THẤY MÃ KÍCH NỔ!");
+            println!("==================================================");
+            println!(
+                "💥 BÙM! CORE MELTDOWN! TÌM THẤY MÃ KÍCH NỔ TẠI ITERATION {}!",
+                iteration
+            );
+            if let Some(actions) = winning_actions {
+                println!("🏆 MÃ GIẢ KIM HOÀN HẢO:\n{:#?}", actions); // Dùng {:#?} để in format dọc cho dễ nhìn
+            }
+            println!("==================================================");
             std::process::exit(0);
         } else if iteration % config.log_interval == 0 {
             println!(
