@@ -79,13 +79,13 @@ impl FuzzEnvironment for AlchemyEnv {
             let mut h = (f.abs() as u32).wrapping_mul(2654435761);
             h ^= h >> 16; // Trộn bit thêm một lần nữa
 
-            // Lấy chính xác 4 bit cuối làm dấu vân tay
-            for i in 0..4 {
+            // (1 bit Is_Zero + 6 bit Hash) * 3 bình = 21 chiều
+            for i in 0..6 {
                 state.push(if (h >> i) & 1 == 1 { 1.0 } else { 0.0 });
             }
         }
 
-        // Tổng cộng: (1 + 4) * 3 = 15 chiều.
+        // Tổng cộng: (1 + 6) * 3 = 21 chiều.
         // Siêu gọn, AI sẽ học cực nhanh!
         state
     }
@@ -180,22 +180,22 @@ fn main() {
 
     let head_sizes = vec![4, 6, 6];
 
-    // Lưu ý: State dimension là 21 (không dùng Frame Stacking để xem bản năng gốc của nó)
-    // Hoặc ông có thể tự wrap Frame Stacking vào AlchemyEnv như đã bàn!
+    // Nâng lên 21 chiều (6-bit Hash cho mỗi bình)
     let agent = create_cpu_agent(
-        15,
+        21,
         512,
         &head_sizes,
         0.005,
         AlchemyTranslator,
-        20.0,
-        0.05,
-        0.1,
+        30.0, // Tăng intrinsic_weight (eta) lên để tò mò mạnh hơn
+        0.2,  // Tăng entropy_coeff (beta) lên để ép AI phải "phân vân"
+        0.1,  // Noise floor giữ mức 0.1 để tay luôn "rung"
+        0.001,
     );
 
     let config = FuzzConfig {
-        num_envs: 1024,            // Quất thẳng 1024 luồng vì Rust chạy quá nhẹ!
-        max_steps_per_episode: 20, // Chuỗi ngắn thôi để nó reset nhanh
+        num_envs: 1024,
+        max_steps_per_episode: 64, // Để 64 cho nó vừa làm vừa chơi, dễ nổ hơn 32
         total_iterations: 10_000,
         log_interval: 10,
     };
