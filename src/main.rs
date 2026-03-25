@@ -3,7 +3,7 @@ use semantic_rl_fuzzer::{
     FuzzConfig, FuzzCorpus, FuzzEngine, FuzzEnvironment, OracleStatus, StepResult, TruthOracle,
     burn_helpers::{ActionTranslator, create_cpu_agent},
 };
-use std::panic;
+use std::{panic, collections::VecDeque};
 
 // ==========================================
 // 1. BEVY GAME LOGIC (OUR VICTIM)
@@ -15,15 +15,34 @@ struct Health(i32);
 #[derive(Component)]
 struct Poison(i32);
 
-/// System 1: Subtract health if poisoned
-fn apply_poison_system(mut query: Query<(&mut Health, &Poison)>) {
-    for (mut health, poison) in query.iter_mut() {
+/// System 1: Độc phân rã theo thời gian và trừ máu (Có Tracking)
+fn apply_poison_system(mut query: Query<(Entity, &mut Health, &mut Poison)>) {
+    for (entity, mut health, mut poison) in query.iter_mut() {
+        let old_health = health.0;
+        let old_poison = poison.0;
+
+        // 1. Logic ẩn: Độc tố bay hơi (giảm 10) sau mỗi chu kỳ
+        if poison.0 > 0 {
+            poison.0 -= 10;
+        }
+
+        // 2. Trừ máu bằng ĐỘC TỐ HIỆN TẠI (Sau khi đã bay hơi)
         health.0 -= poison.0;
 
-        // 🚨 HIDDEN BUG (HIDDEN LOGIC FLAW) 🚨
-        if health.0 == 42 && poison.0 == 99 {
+        // --- 🎥 CAMERA THEO DÕI TIẾN ĐỘ CỦA AI ---
+        // Chỉ báo cáo khi AI đã múa thành công cho Độc giảm về đúng 69.
+        // Điều này chứng minh hàm phân rã thời gian hoạt động hoàn hảo!
+        if poison.0 == 69 {
+            println!(
+                "⏱️ [TRACE] Entity {:?} | Độc = 69! | Trừ máu: {} -> {} (Do chịu {} dame)",
+                entity, old_health, health.0, poison.0
+            );
+        }
+
+        // 🚨 THE TEMPORAL BUG (LỖI THỜI GIAN) 🚨
+        if health.0 == 30 && poison.0 == 69 {
             panic!(
-                "FATAL LOGIC BUG: Found integer overflow vulnerability when Health=42 and Poison=99!"
+                "☢️ FATAL TIME-BOMB BUG: Core Meltdown! Sequential logic triggered at Health=30, Poison=69!"
             );
         }
     }
@@ -51,7 +70,7 @@ pub enum BevyAction {
     RunSchedule,           // Force Bevy to run multithreaded systems
 }
 
-const VALUE_POOL: [i32; 6] = [10, -10, 42, 99, 0, 9999];
+const VALUE_POOL: [i32; 7] = [10, -10, 42, 99, 141, 0, 9999];
 
 // THÊM ĐẠI DIỆN CLONE ĐỂ THỎA MÃN ĐA LUỒNG
 #[derive(Clone)]
@@ -86,6 +105,8 @@ pub struct BevyEnv {
     pub alive_entities: Vec<Entity>,
     pub current_episode: usize,
     pub last_step_crashed: bool,
+    // 🧠 BỘ NHỚ NGẮN HẠN (FRAME STACKING)
+    pub frame_buffer: VecDeque<Vec<f32>>,
 }
 
 impl BevyEnv {
@@ -97,13 +118,61 @@ impl BevyEnv {
         schedule.set_executor_kind(ExecutorKind::SingleThreaded);
         schedule.add_systems((apply_poison_system, check_death_system).chain());
 
-        Self {
+        let mut env = Self {
             world,
             schedule,
             alive_entities: Vec::new(),
             current_episode: 0,
             last_step_crashed: false,
+            frame_buffer: VecDeque::with_capacity(4), // Nhớ 4 nhịp gần nhất!
+        };
+
+        // Khởi tạo buffer bằng các frame rỗng ban đầu (phải gọi sau khi struct đã được tạo)
+        for _ in 0..4 {
+            env.frame_buffer.push_back(env.get_single_frame_state());
         }
+        env
+    }
+
+    /// 👁️ HYBRID STATE (Mắt thần nhìn cả Cờ lẫn Số thực)
+    fn get_single_frame_state(&self) -> Vec<f32> {
+        // 1. Tỷ lệ quái vật còn sống (1 chiều)
+        let mut frame = vec![(self.alive_entities.len() as f32) / 5.0];
+
+        // 2. Histogram (Bảng điểm danh Cờ) - Rất tốt cho Logic (14 chiều nếu VALUE_POOL.len()==7)
+        let mut health_flags = vec![0.0; VALUE_POOL.len()];
+        let mut poison_flags = vec![0.0; VALUE_POOL.len()];
+
+        // 3. Normalized Raw Values - Rất tốt cho Sinh tồn và Nhịp điệu thời gian (2 chiều)
+        let mut total_hp = 0.0;
+        let mut total_poison = 0.0;
+
+        for &entity in &self.alive_entities {
+            let hp = self.world.get::<Health>(entity).map(|h| h.0).unwrap_or(0);
+            let p = self.world.get::<Poison>(entity).map(|p| p.0).unwrap_or(0);
+
+            total_hp += hp as f32;
+            total_poison += p as f32;
+
+            for (i, &val) in VALUE_POOL.iter().enumerate() {
+                if hp == val { health_flags[i] = 1.0; }
+                if p == val { poison_flags[i] = 1.0; }
+            }
+        }
+
+        // TÍNH TOÁN THEO RANGE (Tuyến tính, Min-Max Scaling)
+        // Tổng lớn nhất có thể có: 9999 * 5 = 49,995 (Làm tròn 50,000)
+        let max_abs_value = 50000.0;
+
+        // Scale tuyến tính: Giá trị sẽ luôn nằm gọn trong khoảng [-1.0, 1.0]
+        frame.push(total_hp / max_abs_value);
+        frame.push(total_poison / max_abs_value);
+
+        // Gắn cờ vào
+        frame.extend(health_flags);
+        frame.extend(poison_flags);
+
+        frame // Kích thước 1 frame = 1 + 2 + (7 * 2) = 17 chiều.
     }
 
     fn sync_alive_entities(&mut self) {
@@ -128,26 +197,13 @@ impl FuzzEnvironment for BevyEnv {
     type Action = BevyAction;
 
     fn get_state(&self) -> Self::State {
-        let mut total_hp = 0;
-        let mut total_poison = 0;
-
-        // Chỉ thống kê các chỉ số vĩ mô của thế giới
-        for &entity in &self.alive_entities {
-            let hp = self.world.get::<Health>(entity).map(|h| h.0).unwrap_or(0);
-            let p = self.world.get::<Poison>(entity).map(|p| p.0).unwrap_or(0);
-
-            total_hp += hp;
-            total_poison += p;
+        // 🥞 TRẢ VỀ STATE XẾP CHỒNG (FRAME STACKING)
+        // Ghép 4 frames gần nhất thành một mảng 1D
+        let mut stacked_state = Vec::with_capacity(17 * 4);
+        for frame in self.frame_buffer.iter() {
+            stacked_state.extend_from_slice(frame);
         }
-
-        // Trả về đúng 4 chiều không gian mù lòa.
-        // AI phải tự tìm ra ý nghĩa của việc thay đổi các con số này.
-        vec![
-            (self.alive_entities.len() as f32) / 100.0,
-            (self.world.archetypes().len() as f32) / 10.0,
-            (total_hp as f32) / 1000.0,
-            (total_poison as f32) / 1000.0,
-        ]
+        stacked_state
     }
 
     fn get_action_mask(&self) -> Vec<Vec<bool>> {
@@ -212,8 +268,12 @@ impl FuzzEnvironment for BevyEnv {
 
         self.last_step_crashed = catch_result.is_err();
 
+        // Cập nhật trí nhớ ngắn hạn!
+        self.frame_buffer.pop_front();
+        self.frame_buffer.push_back(self.get_single_frame_state());
+
         StepResult {
-            next_state: self.get_state(),
+            next_state: self.get_state(), // Trả về toàn bộ lịch sử 4 bước
             is_invalid,
         }
     }
@@ -224,6 +284,12 @@ impl FuzzEnvironment for BevyEnv {
         self.alive_entities.clear();
         self.last_step_crashed = false;
         self.current_episode += 1;
+
+        // Reset lại bộ nhớ
+        self.frame_buffer.clear();
+        for _ in 0..4 {
+            self.frame_buffer.push_back(self.get_single_frame_state());
+        }
     }
 }
 
@@ -256,8 +322,12 @@ impl TruthOracle<BevyEnv> for BevyOracle {
 fn main() {
     println!("🚀 Starting Bevy Game Engine Fuzzer (Parallel CPU Actor Mode)...");
 
-    let head_sizes = vec![5, 5, 6];
-    let agent = create_cpu_agent(4, 512, &head_sizes, 0.001, BevyTranslator);
+    let head_sizes = vec![5, 5, 7]; // Head 2 matching VALUE_POOL.len()
+    
+    // 1 frame = 1(count) + 2(sums) + 7(h_flags) + 7(p_flags) = 17
+    // Stack 4 frames = 17 * 4 = 68
+    let input_size = (3 + VALUE_POOL.len() * 2) * 4;
+    let agent = create_cpu_agent(input_size, 512, &head_sizes, 0.001, BevyTranslator);
 
     // Sử dụng Cấu hình mới, sạch sẽ và gom gọn
     let config = FuzzConfig {
@@ -318,4 +388,43 @@ fn main() {
     });
 
     println!("✅ Fuzzing process completed.");
+}
+
+#[test]
+#[should_panic(expected = "FATAL TIME-BOMB BUG")]
+fn test_temporal_bug_is_solvable() {
+    println!("--- BẮT ĐẦU CHẠY TEST CASE CHỨNG MINH ---");
+    let mut env = BevyEnv::new();
+
+    // 1. Khởi tạo thực thể
+    env.step(&BevyAction::SpawnEmpty);
+    println!("Step 1: Sinh ra Entity 0");
+
+    // 2. Bơm Độc 99. Nếu bơm máu ít, quái sẽ chết ngay ở nhịp RunSched đầu tiên do check_death_system!
+    env.step(&BevyAction::AddPoison(0, 99));
+
+    // 3. CHIẾN THUẬT SINH TỒN: Bơm 9999 máu để "gồng" qua những đợt sát thương đầu tiên
+    env.step(&BevyAction::AddHealth(0, 9999));
+    println!("Step 2 & 3: Bơm Độc(99) và Máu(9999) để sống sót.");
+
+    // 4. Nhịp thời gian 1 (RunSched)
+    // Độc: 99 -> 89. Máu: 9999 - 89 = 9910. (Quái vẫn sống > 0)
+    env.step(&BevyAction::RunSchedule);
+    println!("Step 4 (RunSched): Độc giảm còn 89, Máu còn 9910.");
+
+    // 5. Nhịp thời gian 2 (RunSched)
+    // Độc: 89 -> 79. Máu: 9910 - 79 = 9831. (Quái vẫn sống > 0)
+    env.step(&BevyAction::RunSchedule);
+    println!("Step 5 (RunSched): Độc giảm còn 79, Máu còn 9831.");
+
+    // 6. NHÁT CHÉM QUYẾT ĐỊNH (GHI ĐÈ MÁU)
+    // Ngay lúc Độc đang là 79, AI phải ném chính xác số 99 vào để GHI ĐÈ cái lượng máu 9831 kia.
+    env.step(&BevyAction::AddHealth(0, 99));
+    println!("Step 6: AI ném Health(99) vào! Lúc này Máu=99, Độc=79.");
+
+    // 7. Nhịp thời gian 3 (KÍCH NỔ BUG)
+    // Độc: 79 -> 69. Máu: 99 - 69 = 30.
+    // ĐIỀU KIỆN MÁU=30 & ĐỘC=69 ĐÃ THỎA MÃN -> PANIC!
+    println!("Step 7 (RunSched): Độc giảm còn 69, Máu bị trừ 69 (99 - 69 = 30). CHUẨN BỊ NỔ!");
+    env.step(&BevyAction::RunSchedule);
 }
