@@ -191,6 +191,8 @@ fn main() {
         0.2,  // Tăng entropy_coeff (beta) lên để ép AI phải "phân vân"
         0.1,  // Noise floor giữ mức 0.1 để tay luôn "rung"
         0.001,
+        2048,
+        2_000_000,
     );
 
     let config = FuzzConfig {
