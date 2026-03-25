@@ -72,7 +72,7 @@ impl FuzzEnvironment for AlchemyEnv {
         for &f in &self.flasks {
             // 1. BIT VẬT LÝ: Có trống rỗng không? (1 chiều)
             // Đây là thông tin quan trọng nhất để né lỗi Catalyze.
-            state.push(if f == 0 { 1.0 } else { 0.0 });
+            // state.push(if f == 0 { 1.0 } else { 0.0 });
 
             // 2. BITS KÝ HIỆU: 4-bit Hash Fingerprint (4 chiều)
             // Dùng hằng số vàng của Knuth để băm số, phá vỡ hoàn toàn tính chất "to/nhỏ"
@@ -85,7 +85,7 @@ impl FuzzEnvironment for AlchemyEnv {
             }
         }
 
-        // Tổng cộng: (1 + 6) * 3 = 21 chiều.
+        // Tổng cộng: 6 * 3 = 18 chiều.
         // Siêu gọn, AI sẽ học cực nhanh!
         state
     }
@@ -182,7 +182,7 @@ fn main() {
 
     // Nâng lên 21 chiều (6-bit Hash cho mỗi bình)
     let agent = create_cpu_agent(
-        21,
+        18,
         1024,
         &head_sizes,
         0.005,
@@ -226,19 +226,18 @@ fn main() {
 
         // --- HELPER: Hàm kiểm tra vân tay của một con số trong State ---
         let matches_val = |state: &[f32], flask_idx: usize, target: i32| -> bool {
-            let offset = flask_idx * 5;
-            if target == 0 {
-                return state[offset] == 1.0;
-            }
-            if state[offset] == 1.0 {
-                return false;
-            }
+            // Bây giờ mỗi bình chỉ có 6 chiều (chỉ có Hash), không còn bit Check Trống
+            let offset = flask_idx * 6;
 
+            // Tính toán Fingerprint (Hash) của cái "target" mình đang muốn check
+            // Kể cả target == 0 thì mình cũng băm nó ra để so sánh bit-to-bit
             let mut h = (target.abs() as u32).wrapping_mul(2654435761);
             h ^= h >> 16;
-            for i in 0..4 {
+
+            // So khớp 6 bit Hash trực tiếp trong state
+            for i in 0..6 {
                 let bit = if (h >> i) & 1 == 1 { 1.0 } else { 0.0 };
-                if state[offset + 1 + i] != bit {
+                if state[offset + i] != bit {
                     return false;
                 }
             }
