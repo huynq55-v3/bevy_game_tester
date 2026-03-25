@@ -183,7 +183,7 @@ fn main() {
     // Nâng lên 21 chiều (6-bit Hash cho mỗi bình)
     let agent = create_cpu_agent(
         21,
-        512,
+        1024,
         &head_sizes,
         0.005,
         AlchemyTranslator,
@@ -191,7 +191,7 @@ fn main() {
         0.2,  // Tăng entropy_coeff (beta) lên để ép AI phải "phân vân"
         0.1,  // Noise floor giữ mức 0.1 để tay luôn "rung"
         0.001,
-        2048,
+        1024,
         2_000_000,
     );
 
