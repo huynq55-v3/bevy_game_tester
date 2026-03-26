@@ -4,7 +4,7 @@ use semantic_rl_fuzzer::{
     burn_helpers::{ActionTranslator, create_agent},
 };
 
-const VALUE_POOL: [i32; 6] = [10, -10, 42, 99, 55, 9999];
+const VALUE_POOL: [i32; 6] = [10, -10, 42, 99, 0, 9999];
 
 // ==========================================
 // 1. ACTION & TRANSLATOR
@@ -187,16 +187,16 @@ fn main() {
     let agent = create_agent::<FuzzBackend, _>(
         &device,
         18,
-        64,
+        512,
         &head_sizes,
-        0.0015,
+        0.005,
         AlchemyTranslator,
         30.0,
         0.2,
         0.1,
         0.01,
-        1024,
-        512_000,
+        512,
+        2_000_000,
     );
 
     let config = FuzzConfig {
