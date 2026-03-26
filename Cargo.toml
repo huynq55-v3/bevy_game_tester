@@ -4,6 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-semantic_rl_fuzzer = { git = "https://github.com/huynq55-v3/semantic_rl_fuzzer.git", features = ["burn-backend"]}
+semantic_rl_fuzzer = { path = "../semantic_rl_fuzzer" }
 bevy = { version = "0.18.1", default-features = false }
-burn = { version = "0.20.1", features = ["ndarray", "train", "autodiff", "wgpu"] }

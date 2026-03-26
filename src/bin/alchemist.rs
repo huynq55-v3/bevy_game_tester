@@ -1,7 +1,9 @@
-use burn::backend::{Autodiff, Wgpu, wgpu::WgpuDevice};
 use semantic_rl_fuzzer::{
-    FuzzConfig, FuzzCorpus, FuzzEngine, FuzzEnvironment, OracleStatus, StepResult, TruthOracle,
-    burn_helpers::{ActionTranslator, create_agent},
+    agent::{ActionTranslator, create_agent},
+    core::{
+        FuzzConfig, FuzzCorpus, FuzzEngine, FuzzEnvironment, OracleStatus, StepResult, TruthOracle,
+    },
+    models::ModelArchitecture,
 };
 
 const VALUE_POOL: [i32; 6] = [10, -10, 42, 99, 0, 9999];
@@ -181,22 +183,18 @@ fn main() {
 
     let head_sizes = vec![4, 6, 6];
 
-    type FuzzBackend = Autodiff<Wgpu>;
-    let device = WgpuDevice::default();
-
-    let agent = create_agent::<FuzzBackend, _>(
-        &device,
-        18,
-        512,
+    let agent = create_agent(
+        ModelArchitecture::Mlp, // Hoặc ModelArchitecture::Transformer
+        18,                     // Input size
+        512,                    // d_model
         &head_sizes,
-        0.005,
+        0.001, // Learning rate
         AlchemyTranslator,
-        30.0,
-        0.2,
-        0.1,
-        0.01,
-        512,
-        2_000_000,
+        50.0,      // Intrinsic weight
+        0.05,      // Entropy coeff
+        0.01,      // Noise floor
+        1024,      // Batch size
+        2_000_000, // Buffer capacity
     );
 
     let config = FuzzConfig {
