@@ -1,9 +1,10 @@
+use burn::backend::{Autodiff, Wgpu, wgpu::WgpuDevice};
 use semantic_rl_fuzzer::{
     FuzzConfig, FuzzCorpus, FuzzEngine, FuzzEnvironment, OracleStatus, StepResult, TruthOracle,
-    burn_helpers::{ActionTranslator, create_cpu_agent},
+    burn_helpers::{ActionTranslator, create_agent},
 };
 
-const VALUE_POOL: [i32; 6] = [10, -10, 42, 99, 0, 9999];
+const VALUE_POOL: [i32; 6] = [10, -10, 42, 99, 55, 9999];
 
 // ==========================================
 // 1. ACTION & TRANSLATOR
@@ -180,24 +181,27 @@ fn main() {
 
     let head_sizes = vec![4, 6, 6];
 
-    // Nâng lên 21 chiều (6-bit Hash cho mỗi bình)
-    let agent = create_cpu_agent(
+    type FuzzBackend = Autodiff<Wgpu>;
+    let device = WgpuDevice::default();
+
+    let agent = create_agent::<FuzzBackend, _>(
+        &device,
         18,
-        512,
+        64,
         &head_sizes,
-        0.005,
+        0.0015,
         AlchemyTranslator,
-        30.0, // Tăng intrinsic_weight (eta) lên để tò mò mạnh hơn
-        0.2,  // Tăng entropy_coeff (beta) lên để ép AI phải "phân vân"
-        0.1,  // Noise floor giữ mức 0.1 để tay luôn "rung"
+        30.0,
+        0.2,
+        0.1,
         0.01,
-        512,
-        2_000_000,
+        1024,
+        512_000,
     );
 
     let config = FuzzConfig {
         num_envs: 1024,
-        max_steps_per_episode: 64, // Để 64 cho nó vừa làm vừa chơi, dễ nổ hơn 32
+        max_steps_per_episode: 64,
         total_iterations: 10_000,
         log_interval: 10,
     };
