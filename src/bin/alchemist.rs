@@ -160,7 +160,7 @@ fn main() {
 
     let head_sizes = vec![4, 6, 6];
     let agent = create_agent(
-        ModelArchitecture::Mlp,
+        ModelArchitecture::Transformer,
         18,
         128,
         &head_sizes,
@@ -169,6 +169,7 @@ fn main() {
         0.05, // Entropy coeff
         0.1,  // Noise floor (Nhẹ nhàng thôi vì giờ có Coverage dẫn đường rồi)
         1024, // Batch size
+        10,   // sequence length
     );
 
     let config = FuzzConfig {
