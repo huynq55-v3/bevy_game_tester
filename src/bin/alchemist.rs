@@ -167,7 +167,7 @@ fn main() {
         0.001,
         AlchemyTranslator,
         0.05, // Entropy coeff
-        0.05, // Noise floor (Nhẹ nhàng thôi vì giờ có Coverage dẫn đường rồi)
+        0.1,  // Noise floor (Nhẹ nhàng thôi vì giờ có Coverage dẫn đường rồi)
         1024, // Batch size
     );
 
