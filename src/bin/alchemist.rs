@@ -162,7 +162,7 @@ fn main() {
     let agent = create_agent(
         ModelArchitecture::Transformer,
         18,
-        128,
+        32,
         &head_sizes,
         0.001,
         AlchemyTranslator,
