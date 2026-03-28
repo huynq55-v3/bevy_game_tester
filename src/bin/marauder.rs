@@ -7,7 +7,7 @@ use semantic_rl_fuzzer::{
     models::ModelArchitecture,
 };
 
-const VALUE_POOL: [i32; 3] = [42, 99, 9999];
+const VALUE_POOL: [i32; 8] = [42, 99, 9999, 23, 55, 17, 19, 28];
 
 #[derive(Clone, Debug)]
 pub enum AlchemyAction {
