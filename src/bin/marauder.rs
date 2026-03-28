@@ -7,7 +7,7 @@ use semantic_rl_fuzzer::{
     models::ModelArchitecture,
 };
 
-const VALUE_POOL: [i32; 8] = [42, 99, 9999, 23, 55, 17, 19, 28];
+const VALUE_POOL: [i32; 3] = [42, 99, 9999];
 
 #[derive(Clone, Debug)]
 pub enum AlchemyAction {
@@ -36,7 +36,7 @@ impl ActionTranslator for AlchemyTranslator {
 #[derive(Clone)]
 pub struct AlchemyEnv {
     pub flasks: [i32; 3],
-    pub permutation: [usize; 3], // MÃ TRẬN HOÁN VỊ
+    pub permutation: [usize; 3], // 🌟 MÃ TRẬN HOÁN VỊ: Slot 0 chứa Bình nào?
     pub last_step_crashed: bool,
 }
 
@@ -53,7 +53,7 @@ impl AlchemyEnv {
 
     fn shuffle_slots(&mut self) {
         let mut rng = rand::rng();
-        self.permutation.shuffle(&mut rng);
+        self.permutation.shuffle(&mut rng); // Xáo trộn vị trí các bình trong State
     }
 }
 
@@ -64,6 +64,7 @@ impl FuzzEnvironment for AlchemyEnv {
     fn get_state(&self) -> Self::State {
         let mut state = vec![0.0; 18];
         for i in 0..3 {
+            // 🌟 MA GIÁO: Bình i sẽ được hiển thị tại vị trí permutation[i]
             let flask_val = self.flasks[i];
             let slot_idx = self.permutation[i];
 
@@ -118,7 +119,7 @@ impl FuzzEnvironment for AlchemyEnv {
         }
 
         if failed {
-            self.reset();
+            self.reset(); // Mỗi lần fail là xáo lại vị trí
         }
         StepResult {
             next_state: self.get_state(),
@@ -129,7 +130,7 @@ impl FuzzEnvironment for AlchemyEnv {
     fn reset(&mut self) {
         self.flasks = [0; 3];
         self.last_step_crashed = false;
-        self.shuffle_slots();
+        self.shuffle_slots(); // 🌟 XÁO BÀI!
     }
 
     fn hash_state(state: &Self::State) -> u64 {
@@ -146,7 +147,7 @@ pub struct AlchemyOracle;
 impl TruthOracle<AlchemyEnv> for AlchemyOracle {
     fn judge(&self, env: &mut AlchemyEnv, _is_invalid: bool) -> OracleStatus {
         if env.last_step_crashed {
-            return OracleStatus::Violated; // Báo cáo nổ lò
+            return OracleStatus::Violated;
         }
         OracleStatus::Hold { reward: 0.0 }
     }
@@ -163,8 +164,8 @@ fn main() {
         &head_sizes,
         0.0007,
         AlchemyTranslator,
-        0.5, // Entropy coeff mạnh để duy trì tò mò
-        0.2,
+        0.5, // 🌟 TĂNG MẠNH: Ép không được học vẹt
+        0.2, // 🌟 TĂNG NHẸ: Bơm thêm tính liều mạng
         0.1,
         1024,
         10,
@@ -190,12 +191,17 @@ fn main() {
         let mut winning_actions = None;
 
         for traj in rollouts {
-            // Theo dõi hành trình khám phá
-            if traj.reward > global_max_reward && traj.reward > 0.0 {
+            // 🕵️ TRÍCH XUẤT HỒ SƠ MẬT: Bắt quả tang Seed xịn nhất
+            if traj.reward > global_max_reward {
                 global_max_reward = traj.reward;
                 println!("==================================================");
-                println!("🏆 TÌM THẤY TRẠNG THÁI MỚI TẠI ITERATION {}!", iteration);
+                println!("🏆 KỶ LỤC MỚI TẠI ITERATION {}!", iteration);
                 println!("⭐ Điểm Coverage tích lũy: {}", global_max_reward);
+                println!(
+                    "📜 Chuỗi hành động để đạt được ({} bước):",
+                    traj.actions.len()
+                );
+                println!("{:#?}", traj.actions);
                 println!("==================================================");
             }
 
@@ -208,11 +214,14 @@ fn main() {
         if crash_count > 0 {
             println!("==================================================");
             println!(
-                "💥 BÙM! CORE MELTDOWN! TÌM THẤY MÃ KÍCH NỔ THỰC SỰ TẠI ITERATION {}!",
+                "💥 BÙM! CORE MELTDOWN! TÌM THẤY MÃ KÍCH NỔ TẠI ITERATION {}!",
                 iteration
             );
             if let Some(actions) = winning_actions {
-                println!("🏆 MÃ GIẢ KIM HOÀN HẢO:\n{:#?}", actions);
+                println!(
+                    "🏆 MÃ GIẢ KIM HOÀN HẢO (BẤM ĐÚNG TRANSMUTE):\n{:#?}",
+                    actions
+                );
             }
             println!("==================================================");
             std::process::exit(0);
